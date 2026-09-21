@@ -1,0 +1,20 @@
+[project]
+name = "decidophobia"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "accelerate>=1.15.0",
+    "datasets>=5.0.1",
+    "numpy>=2.5.3",
+    "peft>=0.21.0",
+    "torch>=2.14.0",
+    "transformers>=5.17.0",
+]
+
+[dependency-groups]
+dev = [
+    "netcal>=1.4.0",
+    "scikit-learn>=1.9.1",
+    "tensorboard>=2.21.0",
+    "torchmetrics>=1.9.0",
+]
