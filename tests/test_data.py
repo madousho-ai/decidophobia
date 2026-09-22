@@ -7,7 +7,7 @@ import random
 import sys
 
 from decidophobia.data import MenuExample, build_examples, class_split, compose_menu
-from decidophobia.prompt import render_menu
+from decidophobia.prompt import render_menu, split_prompt
 
 # --------------------------------------------------------------------------
 # class_split
@@ -98,6 +98,32 @@ def test_render_menu_lists_options_with_d_tokens_in_order_and_ends_at_answer():
     assert "I lost my card" in s, repr(s)
     assert s.endswith("Answer:"), repr(s[-30:])
     assert "<|D2|>" not in s, repr(s)
+
+
+def test_context_first_layout_puts_query_before_menu_and_splits_there():
+    """context-first: 用户句在前, 菜单在后 —— 前缀只含上下文, 多个问题可共用它的 KV cache.
+
+    split_prompt 给出 (context, question) 两段, 拼起来等于整条提示, 分界在用户句之后.
+    """
+    ex = MenuExample(query="I lost my card", options=[7, 2], gold_idx=1, label=2)
+    names = {2: "change pin", 7: "card arrival"}
+    s = render_menu(ex, names, layout="context-first")
+    assert s.index("I lost my card") < s.index("<|D0|>"), repr(s)
+    assert s.endswith("Answer:"), repr(s[-30:])
+    ctx, q = split_prompt(ex, names, layout="context-first")
+    assert ctx + q == s, (ctx, q)
+    assert "I lost my card" in ctx and "<|D0|>" not in ctx, repr(ctx)
+    assert "<|D0|>" in q and "I lost my card" not in q, repr(q)
+
+
+def test_context_prefix_is_identical_across_questions():
+    """同一个用户句配两份不同的菜单, context 段必须逐字相同 —— 否则 cache 共享不成立."""
+    names = {i: f"n{i}" for i in range(6)}
+    a = MenuExample(query="q", options=[0, 1], gold_idx=0, label=0)
+    b = MenuExample(query="q", options=[3, 4, 5], gold_idx=2, label=5)
+    ca, _ = split_prompt(a, names, layout="context-first")
+    cb, _ = split_prompt(b, names, layout="context-first")
+    assert ca == cb, (ca, cb)
 
 
 if __name__ == "__main__":
