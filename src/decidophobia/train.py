@@ -27,6 +27,7 @@ class TrainConfig:
     lr_embed: float = 1e-3
     weight_decay: float = 0.0
     lr_schedule: str = "constant"  # constant | cosine
+    layout: str = "menu-first"  # menu-first | context-first
     warmup_steps: int = 0
     eval_every: int = 100
     eval_batch_size: int = 16
@@ -50,14 +51,14 @@ def sample_examples(
 
 
 @torch.no_grad()
-def evaluate(m, tok, names, d_ids, examples: list[MenuExample], k_max: int, batch_size: int) -> dict:
+def evaluate(m, tok, names, d_ids, examples: list[MenuExample], k_max: int, batch_size: int, layout: str = "menu-first") -> dict:
     """在给定样本上算 summarize() 那组指标. 概率只在各自菜单的 k 个槽上归一."""
     was_training = m.training
     m.eval()
     Q, Y = [], []
     for s in range(0, len(examples), batch_size):
         chunk = examples[s : s + batch_size]
-        b = collate(chunk, tok, names, d_ids, k_max)
+        b = collate(chunk, tok, names, d_ids, k_max, layout)
         b = {k: v.to("cuda") for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
         q = torch.softmax(gather_slot_logits(logits, b["slot_ids"]), dim=-1)  # pad 槽 exp(-inf)=0
@@ -106,7 +107,7 @@ def train(
         rec = {"step": step, "train_loss": train_loss, "t": round(time.time() - t0, 1),
                "tctl_c": tctl(), "thermal_waits": waits}
         for name, exs in eval_sets.items():
-            rec[name] = evaluate(m, tok, names, d_ids, exs, cfg.k_max, cfg.eval_batch_size)
+            rec[name] = evaluate(m, tok, names, d_ids, exs, cfg.k_max, cfg.eval_batch_size, cfg.layout)
             if writer:
                 for k, v in rec[name].items():
                     writer.add_scalar(f"eval/{name}/{k}", v, step)
@@ -130,7 +131,7 @@ def train(
         if guard:
             waits += guard.wait()
         exs = sample_examples(train_queries, train_labels, train_classes, cfg.k_range, cfg.batch_size, rng)
-        b = collate(exs, tok, names, d_ids, cfg.k_max)
+        b = collate(exs, tok, names, d_ids, cfg.k_max, cfg.layout)
         b = {k: v.to("cuda") for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
         loss = torch.nn.functional.cross_entropy(gather_slot_logits(logits, b["slot_ids"]), b["gold"])

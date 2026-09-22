@@ -14,6 +14,7 @@ def collate(
     names: dict[int, str],
     d_ids: list[int],
     k_max: int,
+    layout: str = "menu-first",
 ) -> dict[str, torch.Tensor]:
     """返回
       input_ids      (B, L)  左填充
@@ -21,7 +22,7 @@ def collate(
       slot_ids       (B, k_max)  第 j 列是 <|Dj|> 的 id, 超出该样本菜单长度的位置填 -1
       gold           (B,)        正确选项在菜单里的位置
     """
-    texts = [render_menu(ex, names) for ex in examples]
+    texts = [render_menu(ex, names, layout) for ex in examples]
     pad = tokenizer.pad_token_id
     encs = [tokenizer.encode(t, add_special_tokens=False) for t in texts]
     L = max(len(e) for e in encs)
