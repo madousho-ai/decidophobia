@@ -11,10 +11,10 @@ from decidophobia.prompt import DEFAULT_LAYOUT, render_menu
 def collate(
     examples: list[MenuExample],
     tokenizer,
-    names: dict[int, str],
     d_ids: list[int],
     k_max: int,
     layout: str = DEFAULT_LAYOUT,
+    max_length: int = 512,
 ) -> dict[str, torch.Tensor]:
     """返回
       input_ids      (B, L)  左填充
@@ -22,9 +22,10 @@ def collate(
       slot_ids       (B, k_max)  第 j 列是 <|Dj|> 的 id, 超出该样本菜单长度的位置填 -1
       gold           (B,)        正确选项在菜单里的位置
     """
-    texts = [render_menu(ex, names, layout) for ex in examples]
+    texts = [render_menu(ex, layout) for ex in examples]
     pad = tokenizer.pad_token_id
-    encs = [tokenizer.encode(t, add_special_tokens=False) for t in texts]
+    # 超长的从左边截 (BoolQ 的 passage 在最前面), 答案位置永远保住
+    encs = [tokenizer.encode(t, add_special_tokens=False)[-max_length:] for t in texts]
     L = max(len(e) for e in encs)
     input_ids = torch.full((len(encs), L), pad, dtype=torch.long)
     attn = torch.zeros((len(encs), L), dtype=torch.long)

@@ -40,8 +40,8 @@ def test_embedding_gradient_is_zero_outside_d_rows():
     """一步反传后, 嵌入矩阵的梯度只在 D 行非零 —— 基模的词嵌入不许动."""
     tok, d_ids, lm = _load()
     m = prepare_model(lm, d_ids, lora_r=4, lora_alpha=8, lora_dropout=0.0)
-    exs = [MenuExample(query="I lost my card", options=[0, 1], gold_idx=0, label=0)]
-    b = collate(exs, tok, {0: "card lost", 1: "change pin"}, d_ids, k_max=2)
+    exs = [MenuExample(query="I lost my card", options=[0, 1], gold_idx=0, label=0, option_names=["card lost", "change pin"])]
+    b = collate(exs, tok, d_ids, k_max=2)
     b = {k: v.to("cuda") for k, v in b.items()}
     logits = last_logits(m, b["input_ids"], b["attention_mask"])
     slot_cross_entropy(logits, b["slot_ids"], b["gold"]).backward()

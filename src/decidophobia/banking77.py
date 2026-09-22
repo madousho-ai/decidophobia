@@ -9,20 +9,14 @@ import csv
 import hashlib
 import pathlib
 import urllib.request
-from dataclasses import dataclass
+
+from decidophobia.data import LabeledSet
 
 DATA_COMMIT = "9d081458ff52e53cf7e848f414e6e9344e4e6696"
 DATA_FILES = {
     "train": ("cec64185f4197906aabce0781ef9a19b", 10003),
     "test": ("8dcd9dc31b686c75ec1f24bf23c140cb", 3080),
 }
-
-
-@dataclass(frozen=True)
-class LabeledSet:
-    queries: list[str]
-    labels: list[int]  # 索引进 names
-    names: dict[int, str]  # 类 id -> 给模型看的名字
 
 
 def humanize(raw: str) -> str:
@@ -57,6 +51,7 @@ def load_banking77(cache_dir="data/banking77") -> tuple[LabeledSet, LabeledSet]:
     names = {i: humanize(c) for c, i in idx.items()}
 
     def mk(rows):
-        return LabeledSet([t for t, _ in rows], [idx[c] for _, c in rows], names)
+        return LabeledSet(queries=[t for t, _ in rows], labels=[idx[c] for _, c in rows], names=names,
+                          context_label="Customer message")
 
     return mk(tr), mk(te)

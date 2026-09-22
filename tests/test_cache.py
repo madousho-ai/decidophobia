@@ -26,22 +26,22 @@ def test_branch_logits_match_full_forward_on_d_slots():
     tok = AutoTokenizer.from_pretrained(MODEL)
     d_ids = install_d_tokens(tok)
     lm = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.bfloat16).to("cuda").eval()
-    names = {i: f"intent number {i}" for i in range(8)}
-    q1 = MenuExample(query="I am seeing a cash withdrawal that is not mine", options=[3, 5], gold_idx=0, label=3)
-    q2 = MenuExample(query=q1.query, options=[0, 1, 2, 7], gold_idx=3, label=7)
+    nm = lambda opts: [f"intent number {i}" for i in opts]  # noqa: E731
+    q1 = MenuExample(query="I am seeing a cash withdrawal that is not mine", options=[3, 5], gold_idx=0, label=3, option_names=nm([3, 5]))
+    q2 = MenuExample(query=q1.query, options=[0, 1, 2, 7], gold_idx=3, label=7, option_names=nm([0, 1, 2, 7]))
 
-    ctx, s1 = split_prompt(q1, names, layout="context-first")
-    _, s2 = split_prompt(q2, names, layout="context-first")
+    ctx, s1 = split_prompt(q1, layout="context-first")
+    _, s2 = split_prompt(q2, layout="context-first")
     # 分段编码拼起来必须等于整条编码, 否则分界处的 BPE 合并会让两条路径看到不同的 token
     for ex, seg in [(q1, s1), (q2, s2)]:
-        whole = tok.encode(render_menu(ex, names, layout="context-first"), add_special_tokens=False)
+        whole = tok.encode(render_menu(ex, layout="context-first"), add_special_tokens=False)
         parts = tok.encode(ctx, add_special_tokens=False) + tok.encode(seg, add_special_tokens=False)
         assert whole == parts, (len(whole), len(parts))
 
     cache = prefix_cache(lm, tok, ctx)
     for ex, seg in [(q1, s1), (q2, s2)]:
         got = branch_logits(lm, tok, cache, seg)
-        full = tok(render_menu(ex, names, layout="context-first"), return_tensors="pt").to("cuda")
+        full = tok(render_menu(ex, layout="context-first"), return_tensors="pt").to("cuda")
         want = last_logits(lm, full["input_ids"], full["attention_mask"])
         k = len(ex.options)
         a, b = got[0, d_ids[:k]], want[0, d_ids[:k]]
@@ -57,9 +57,8 @@ def test_prefix_cache_is_not_mutated_by_branches():
     tok = AutoTokenizer.from_pretrained(MODEL)
     install_d_tokens(tok)
     lm = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.bfloat16).to("cuda").eval()
-    names = {i: f"intent number {i}" for i in range(4)}
-    ex = MenuExample(query="hello there", options=[0, 1], gold_idx=0, label=0)
-    ctx, seg = split_prompt(ex, names, layout="context-first")
+    ex = MenuExample(query="hello there", options=[0, 1], gold_idx=0, label=0, option_names=["intent number 0", "intent number 1"])
+    ctx, seg = split_prompt(ex, layout="context-first")
     cache = prefix_cache(lm, tok, ctx)
     n0 = cache.get_seq_length()
     first = branch_logits(lm, tok, cache, seg)

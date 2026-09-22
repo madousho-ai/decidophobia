@@ -67,11 +67,11 @@ def test_collate_left_pads_so_answer_position_is_last():
     tok = _tok()
     d_ids = install_d_tokens(tok)
     exs = [
-        MenuExample(query="short", options=[0, 1], gold_idx=0, label=0),
-        MenuExample(query="a much longer customer message here", options=[2, 0, 1], gold_idx=2, label=1),
+        MenuExample(query="short", options=[0, 1], gold_idx=0, label=0, option_names=["a", "b"]),
+        MenuExample(query="a much longer customer message here", options=[2, 0, 1], gold_idx=2, label=1,
+                    option_names=["c", "a", "b"]),
     ]
-    names = {0: "a", 1: "b", 2: "c"}
-    b = collate(exs, tok, names, d_ids, k_max=4)
+    b = collate(exs, tok, d_ids, k_max=4)
     colon = tok.encode(":", add_special_tokens=False)[0]
     assert b["input_ids"].shape[0] == 2
     assert (b["input_ids"][:, -1] == colon).all(), b["input_ids"][:, -1]
@@ -83,11 +83,10 @@ def test_collate_builds_slot_ids_by_position_and_pads_with_minus_one():
     tok = _tok()
     d_ids = install_d_tokens(tok)
     exs = [
-        MenuExample(query="x", options=[5, 9], gold_idx=1, label=9),
-        MenuExample(query="y", options=[1, 2, 3], gold_idx=0, label=1),
+        MenuExample(query="x", options=[5, 9], gold_idx=1, label=9, option_names=["n5", "n9"]),
+        MenuExample(query="y", options=[1, 2, 3], gold_idx=0, label=1, option_names=["n1", "n2", "n3"]),
     ]
-    names = {i: f"n{i}" for i in range(10)}
-    b = collate(exs, tok, names, d_ids, k_max=4)
+    b = collate(exs, tok, d_ids, k_max=4)
     assert b["slot_ids"].tolist() == [
         [d_ids[0], d_ids[1], -1, -1],
         [d_ids[0], d_ids[1], d_ids[2], -1],
