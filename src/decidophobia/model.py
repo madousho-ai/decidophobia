@@ -1,15 +1,19 @@
-"""可训练的部分: attention 上的 LoRA + 嵌入矩阵里 256 个 D 行. 其余冻结.
+"""可训练的部分: attention 上的 LoRA + 嵌入矩阵里放开的行 (256 个 D 行 + 类型 token 行). 其余冻结.
 
 改的是路由 (哪一行匹配) 和槽标记 (D-token 的向量), 知识那部分不碰.
 
-D 行的放开用梯度 hook 实现: 整个嵌入矩阵 requires_grad, 反传后把非 D 行的梯度
-清零. peft 有 trainable_token_indices 做同一件事, 但它在 tied embedding 上的
-处理路径这几个版本变过好几次, 一个 8 行的 hook 比追它稳.
+放开的行拆成一个独立的小参数 rows (259 × hidden), 整张嵌入矩阵冻死.
+SlotEmbedding 在查表结果上把这几行盖上去, SlotHead 在 logits 上把这几列换掉,
+两端共用同一个 rows —— 与 tie_word_embeddings 的语义一致 (菜单里读进来的向量
+和答案位置上打分的向量是同一个), 但 AdamW 只给 259 行存状态, 而非整张 151936 行
+(fp32 两份矩, 1.2 GiB, 其中 99.8% 永远是零). 之前用整张矩阵 requires_grad + 梯度 hook
+清零的做法, 训练效果相同, 显存差在这里.
 """
 
 from __future__ import annotations
 
 import torch
+import torch.nn as nn
 from peft import LoraConfig, get_peft_model
 
 ATTN_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj"]
@@ -18,36 +22,89 @@ MLP_TARGETS = ["gate_proj", "up_proj", "down_proj"]
 # 放开的范围, 三档. 全参不在其中: 0.6B 全参 AdamW 的优化器状态 8GB 卡放不下,
 # 更要紧的是它让模型有能力记住数据集的事实, 留出类的成绩就不再说明泛化.
 LORA_TARGETS: dict[str, list[str]] = {
-    "d-only": [],  # 基模全冻, 只训 256 个 D 行 —— 纯读出
+    "d-only": [],  # 基模全冻, 只训 rows —— 纯读出
     "attn": ATTN_TARGETS,
     "attn-mlp": ATTN_TARGETS + MLP_TARGETS,
 }
 
 
+class SlotEmbedding(nn.Module):
+    """冻结的整张嵌入 + 一个可训的 rows (n × hidden), 查表后把 ids 对应的位置换成 rows."""
+
+    def __init__(self, base: nn.Embedding, ids: list[int]):
+        super().__init__()
+        self.base = base
+        base.weight.requires_grad_(False)
+        self.register_buffer("ids", torch.tensor(ids, device=base.weight.device), persistent=False)
+        # 空行的初值是随机的 (基模从没训过它们); 从已有嵌入的均值起步, 让第一步就在合理的尺度上
+        with torch.no_grad():
+            mu = base.weight[: min(ids)].mean(0)
+            init = mu + 0.01 * torch.randn(len(ids), base.weight.shape[1], device=mu.device, dtype=mu.dtype)
+        self.rows = nn.Parameter(init)
+        # 位置 -> rows 里的行号; 不在 ids 里的是 -1
+        lut = torch.full((base.weight.shape[0],), -1, dtype=torch.long, device=base.weight.device)
+        lut[self.ids] = torch.arange(len(ids), device=lut.device)
+        self.register_buffer("lut", lut, persistent=False)
+
+    @property
+    def weight(self) -> torch.Tensor:  # 让读 embed.weight 的外部代码仍拿到整张矩阵
+        return self.base.weight
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        out = self.base(input_ids)
+        pos = self.lut[input_ids]
+        hit = pos >= 0
+        if hit.any():
+            out = out.clone()
+            out[hit] = self.rows[pos[hit]].to(out.dtype)
+        return out
+
+
+class SlotHead(nn.Module):
+    """冻结的 h @ Wᵀ, 再把 ids 那几列换成 h @ rowsᵀ. rows 与 SlotEmbedding 的是同一个张量."""
+
+    def __init__(self, base: nn.Module, emb: SlotEmbedding):
+        super().__init__()
+        self.base = base
+        for p in base.parameters():
+            p.requires_grad_(False)
+        self.emb = emb  # 不复制 rows, 引用同一个 Parameter
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        logits = self.base(h).clone()
+        logits[..., self.emb.ids] = (h @ self.emb.rows.T.to(h.dtype)).to(logits.dtype)
+        return logits
+
+
 def prepare_model(
-    lm, train_ids: list[int], lora_r: int, lora_alpha: int, lora_dropout: float, trainable: str = "attn"
+    lm, train_ids: list[int], lora_r: int, lora_alpha: int, lora_dropout: float,
+    trainable: str = "attn", grad_ckpt: bool = False,
 ):
-    """train_ids: 嵌入矩阵里放开的行 —— 256 个 D 行, 加上用到的类型 token 行."""
+    """train_ids: 嵌入矩阵里放开的行 —— 256 个 D 行, 加上类型 token 行.
+
+    grad_ckpt: 反传时逐层重算前向, 不存激活. 实测 batch 8 × 512 token 的激活从 5+ GiB 降到 0.58 GiB,
+    代价约 +30% 时间. 8GB 卡上 BoolQ passage 进 batch 8 必须开.
+    """
+    for p in lm.parameters():
+        p.requires_grad_(False)
+    emb = SlotEmbedding(lm.get_input_embeddings(), train_ids)
+    lm.set_input_embeddings(emb)
+    lm.lm_head = SlotHead(lm.lm_head, emb)
+    if grad_ckpt:
+        lm.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     targets = LORA_TARGETS[trainable]
-    if targets:
+    if not targets:
+        m = lm
+    else:
         cfg = LoraConfig(
             r=lora_r, lora_alpha=lora_alpha, lora_dropout=lora_dropout,
             target_modules=targets, bias="none", task_type="CAUSAL_LM",
         )
         m = get_peft_model(lm, cfg)
-    else:
-        m = lm
-        for p in m.parameters():
-            p.requires_grad_(False)
-    emb = m.get_input_embeddings().weight
-    emb.requires_grad_(True)
-    keep = torch.zeros(emb.shape[0], dtype=torch.bool, device=emb.device)
-    keep[train_ids] = True
-    emb.register_hook(lambda g: g * keep[:, None].to(g.dtype))
-    # 空行的初值是随机的 (基模从没训过它们); 从已有嵌入的均值起步, 让第一步就在合理的尺度上
-    with torch.no_grad():
-        mu = emb[: min(train_ids)].mean(0)
-        emb[train_ids] = mu + 0.01 * torch.randn(len(train_ids), emb.shape[1], device=emb.device, dtype=emb.dtype)
+        emb.rows.requires_grad_(True)  # get_peft_model 会把 LoRA 之外的全部冻上, rows 要在它之后放开
+    if grad_ckpt:
+        # checkpoint 段的输入必须 requires_grad, 否则反传在段边界断掉、LoRA 收不到梯度
+        m.enable_input_require_grads()
     return m
 
 
@@ -56,7 +113,7 @@ def trainable_param_groups(m, lr_lora: float, lr_embed: float) -> list[dict]:
     for n, p in m.named_parameters():
         if not p.requires_grad:
             continue
-        (embed if "embed_tokens" in n else lora).append(p)
+        (embed if n.endswith(".rows") else lora).append(p)
     return [{"params": lora, "lr": lr_lora}, {"params": embed, "lr": lr_embed}]
 
 

@@ -167,10 +167,10 @@ def train(
 
 def save_trained(m, train_ids: list[int], cfg: TrainConfig, path) -> None:
     """只存会变的部分: LoRA 权重 + 放开的嵌入行 (D 行 + 类型行) + 配置. 基模照 model_id 重新加载."""
-    emb = m.get_input_embeddings().weight
+    rows = m.get_input_embeddings().rows
     state = {n: p.detach().cpu() for n, p in m.named_parameters() if p.requires_grad and "lora_" in n}
     torch.save(
-        {"lora": state, "d_embed": emb[train_ids].detach().cpu(), "d_ids": train_ids, "config": asdict(cfg)},
+        {"lora": state, "d_embed": rows.detach().cpu(), "d_ids": train_ids, "config": asdict(cfg)},
         path,
     )
 
@@ -187,6 +187,6 @@ def load_trained(m, train_ids: list[int], path) -> dict:
     with torch.no_grad():
         for n, t in ck["lora"].items():
             params[n].copy_(t.to(params[n].dtype))
-        emb = m.get_input_embeddings().weight
-        emb[train_ids] = ck["d_embed"].to(emb.dtype).to(emb.device)
+        rows = m.get_input_embeddings().rows
+        rows.copy_(ck["d_embed"].to(rows.dtype).to(rows.device))
     return ck["config"]
