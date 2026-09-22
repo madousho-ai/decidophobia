@@ -41,6 +41,9 @@ def main() -> None:
     ap.add_argument("--lora-dropout", type=float, default=0.05)
     ap.add_argument("--lr-lora", type=float, default=1e-4)
     ap.add_argument("--lr-embed", type=float, default=1e-3)
+    ap.add_argument("--lr-schedule", default="cosine", choices=["constant", "cosine"])
+    ap.add_argument("--warmup", type=int, default=100, help="线性 warmup 步数")
+    ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=300)
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--k-min", type=int, default=2)
@@ -56,7 +59,7 @@ def main() -> None:
     ap.add_argument("--out", default=None, help="默认 runs/<时间戳>-<trainable>")
     args = ap.parse_args()
 
-    out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.trainable}")
+    out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.trainable}-{args.lr_schedule}")
     out.mkdir(parents=True, exist_ok=True)
 
     tr, te = load_banking77(args.data_dir)
@@ -82,6 +85,7 @@ def main() -> None:
     cfg = TrainConfig(
         steps=args.steps, batch_size=args.batch_size, k_range=(args.k_min, args.k_max),
         k_max=max(args.k_max, args.k_eval), lr_lora=args.lr_lora, lr_embed=args.lr_embed,
+        weight_decay=args.weight_decay, lr_schedule=args.lr_schedule, warmup_steps=args.warmup,
         eval_every=args.eval_every, seed=args.seed,
     )
     guard = ThermalGuard(max_c=args.temp_max, cooldown_s=args.temp_cooldown)

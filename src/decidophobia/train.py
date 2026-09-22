@@ -14,6 +14,7 @@ from decidophobia.data import MenuExample, compose_menu
 from decidophobia.loss import gather_slot_logits
 from decidophobia.metrics import summarize
 from decidophobia.model import last_logits, trainable_param_groups
+from decidophobia.schedule import lr_scale
 
 
 @dataclass
@@ -25,6 +26,8 @@ class TrainConfig:
     lr_lora: float = 1e-4
     lr_embed: float = 1e-3
     weight_decay: float = 0.0
+    lr_schedule: str = "constant"  # constant | cosine
+    warmup_steps: int = 0
     eval_every: int = 100
     eval_batch_size: int = 16
     log_every: int = 20
@@ -86,6 +89,9 @@ def train(
     opt = torch.optim.AdamW(
         trainable_param_groups(m, cfg.lr_lora, cfg.lr_embed), weight_decay=cfg.weight_decay
     )
+    sched = torch.optim.lr_scheduler.LambdaLR(
+        opt, lambda s: lr_scale(s, cfg.warmup_steps, cfg.steps, cfg.lr_schedule)
+    )
     history: list[dict] = []
     log_f = open(log_path, "a") if log_path else None
     waits = 0
@@ -131,6 +137,7 @@ def train(
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
+        sched.step()
         running += loss.item()
         if step % cfg.log_every == 0:
             avg = running / cfg.log_every
