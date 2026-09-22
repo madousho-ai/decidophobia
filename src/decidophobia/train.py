@@ -176,17 +176,22 @@ def save_trained(m, train_ids: list[int], cfg: TrainConfig, path) -> None:
 
 
 def load_trained(m, train_ids: list[int], path) -> dict:
-    """把 save_trained 存的 LoRA 权重和嵌入行灌回 prepare_model 之后的模型. 返回存档里的 config."""
+    """把 save_trained 存的 LoRA 权重和嵌入行灌回 prepare_model 之后的模型. 返回存档里的 config.
+
+    档里的 ids 允许是模型 train_ids 的前缀: 类型 token 加进来之前的档只有 256 个 D 行,
+    那 3 行当时不在提示里、梯度为零, 留在初始化就是那次训练的真实状态. 多出的行原样不动.
+    """
     ck = torch.load(path, map_location="cpu")
-    if ck["d_ids"] != train_ids:
-        raise ValueError(f"checkpoint has {len(ck['d_ids'])} trainable embedding rows, this model expects {len(train_ids)}")
+    n = len(ck["d_ids"])
+    if ck["d_ids"] != train_ids[:n]:
+        raise ValueError(f"checkpoint's {n} trainable embedding rows are not a prefix of this model's {len(train_ids)}")
     params = dict(m.named_parameters())
     missing = [n for n in ck["lora"] if n not in params]
     if missing:
         raise ValueError(f"{len(missing)} LoRA tensors in checkpoint have no home in this model, e.g. {missing[0]}")
     with torch.no_grad():
-        for n, t in ck["lora"].items():
-            params[n].copy_(t.to(params[n].dtype))
+        for name, t in ck["lora"].items():
+            params[name].copy_(t.to(params[name].dtype))
         rows = m.get_input_embeddings().rows
-        rows.copy_(ck["d_embed"].to(rows.dtype).to(rows.device))
+        rows[:n].copy_(ck["d_embed"].to(rows.dtype).to(rows.device))
     return ck["config"]
