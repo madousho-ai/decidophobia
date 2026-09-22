@@ -37,6 +37,7 @@ class MenuExample:
     option_names: list[str]  # 与 options 平行, 菜单里显示的名字
     context_label: str = "Customer message"  # 上下文前面的标签
     question: str | None = None  # 这条样本的问句; None 表示数据集用固定的默认问句
+    qtype: str = "choice"  # choice | bool | score, 见 tokens.QTYPES
 
 
 def compose_menu(gold: int, pool: list[int], k: int, rng: random.Random) -> tuple[list[int], int]:
@@ -57,12 +58,14 @@ class LabeledSet:
     context_label: str = "Customer message"
     questions: list[str] | None = None  # 与 queries 平行; None 表示没有逐条问句
     question_default: str | None = field(default=None)  # 没有逐条问句时统一用它
+    qtype: str = "choice"
 
     def make_example(self, i: int, options: list[int], gold_idx: int) -> MenuExample:
         q = self.questions[i] if self.questions is not None else self.question_default
         return MenuExample(
             query=self.queries[i], options=options, gold_idx=gold_idx, label=self.labels[i],
             option_names=[self.names[c] for c in options], context_label=self.context_label, question=q,
+            qtype=self.qtype,
         )
 
     def build_examples(self, classes: list[int], k_range: tuple[int, int], rng: random.Random) -> list[MenuExample]:

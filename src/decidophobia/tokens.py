@@ -12,8 +12,19 @@ from __future__ import annotations
 N_SLOTS = 256
 D_TOKENS = [f"<|D{i}|>" for i in range(N_SLOTS)]
 
+# 问题类型标记, 写在 "Question (<|bool|>):" 的括号里. choice = k 个无序选项; bool = choice 的 k=2;
+# score = k 个有序选项、期望值当分数 —— score 需要有序损失和对应数据集, 现在只占 token 位.
+TYPE_TOKENS = ["<|choice|>", "<|bool|>", "<|score|>"]
+QTYPES = ("choice", "bool", "score")
+
 
 def install_d_tokens(tokenizer) -> list[int]:
     """把 256 个 D-token 加进 tokenizer (已有则跳过), 返回它们的 id, 顺序与 D_TOKENS 一致."""
     tokenizer.add_tokens(D_TOKENS, special_tokens=True)
     return tokenizer.convert_tokens_to_ids(D_TOKENS)
+
+
+def install_type_tokens(tokenizer) -> list[int]:
+    """把 3 个类型 token 加进 tokenizer, 紧跟 D-token 之后. 先装 D 再装它, id 才稳定."""
+    tokenizer.add_tokens(TYPE_TOKENS, special_tokens=True)
+    return tokenizer.convert_tokens_to_ids(TYPE_TOKENS)

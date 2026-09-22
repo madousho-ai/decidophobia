@@ -79,6 +79,15 @@ def test_sample_examples_draws_n_with_varied_k():
     assert len(ex) == 20 and {len(e.options) for e in ex} <= {2, 3, 4} and len({len(e.options) for e in ex}) > 1
 
 
+def test_labeled_set_qtype_flows_into_examples():
+    """数据集定 qtype (choice / bool), 每条样本带着它."""
+    s = _set(n=4, n_cls=2)
+    assert s.qtype == "choice"
+    s2 = LabeledSet(queries=s.queries, labels=s.labels, names=s.names, qtype="bool")
+    ex = s2.build_examples(classes=[0, 1], k_range=(2, 2), rng=random.Random(0))
+    assert all(e.qtype == "bool" for e in ex)
+
+
 def test_labeled_set_carries_per_item_question():
     """BoolQ 每条各有问句; 通过 questions 列表按索引带进样本."""
     s = _set(n=3, n_cls=2, questions=["is it a?", "is it b?", "is it c?"])
@@ -127,6 +136,20 @@ def test_question_goes_between_context_and_menu():
     assert ctx.startswith("Passage: The sky is blue") and "scattering?" not in ctx, repr(ctx)
     assert q.index("Question: is the sky blue") < q.index("<|D0|>. yes"), repr(q)
     assert "\n<|D0|>. yes\n<|D1|>. no\n" in q and q.endswith("Answer:"), repr(q)
+
+
+def test_type_marker_sits_inside_the_question_label():
+    """type_marker=True: 'Question (<|bool|>):'; False: 'Question:'. 标记跟着 Question 这个锚走, 其余一字不差."""
+    ex = _ex("p", options=(1, 0), gold_idx=0, qtype="bool", question="is it?")
+    on = render_menu(ex, type_marker=True)
+    off = render_menu(ex, type_marker=False)
+    assert "Question (<|bool|>): is it?" in on, repr(on)
+    assert "Question: is it?" in off and "<|bool|>" not in off, repr(off)
+    assert on.replace(" (<|bool|>)", "") == off, (on, off)
+
+
+def test_type_marker_default_is_off():
+    assert "<|choice|>" not in render_menu(_ex("p", qtype="choice"))
 
 
 if __name__ == "__main__":

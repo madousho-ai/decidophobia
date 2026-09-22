@@ -28,22 +28,25 @@ def _menu(ex: MenuExample) -> str:
     return "\n".join(f"{D_TOKENS[i]}. {name}" for i, name in enumerate(ex.option_names))
 
 
-def _question_block(ex: MenuExample) -> str:
+def _question_block(ex: MenuExample, type_marker: bool) -> str:
     q = ex.question if ex.question is not None else DEFAULT_QUESTION
-    return f"Question: {q}\nOptions:\n{_menu(ex)}"
+    label = f"Question (<|{ex.qtype}|>):" if type_marker else "Question:"
+    return f"{label} {q}\nOptions:\n{_menu(ex)}"
 
 
-def split_prompt(ex: MenuExample, layout: str = DEFAULT_LAYOUT) -> tuple[str, str]:
-    """(context, question). menu-first 下 context 为空串 —— 那种布局没有可共享的前缀."""
+def split_prompt(ex: MenuExample, layout: str = DEFAULT_LAYOUT, type_marker: bool = False) -> tuple[str, str]:
+    """(context, question). menu-first 下 context 为空串 —— 那种布局没有可共享的前缀.
+    type_marker=True 时问句标签写成 'Question (<|bool|>):', 类型 token 挂在 Question 这个锚上."""
     ctx = f"{ex.context_label}: {ex.query}"
+    qb = _question_block(ex, type_marker)
     if layout == "context-first":
-        return ctx + "\n\n", _question_block(ex) + "\n\nAnswer:"
+        return ctx + "\n\n", qb + "\n\nAnswer:"
     if layout == "menu-first":
-        return "", _question_block(ex) + f"\n\n{ctx}\nAnswer:"
+        return "", qb + f"\n\n{ctx}\nAnswer:"
     raise ValueError(f"unknown layout {layout!r}; expected one of {LAYOUTS}")
 
 
-def render_menu(ex: MenuExample, layout: str = DEFAULT_LAYOUT) -> str:
+def render_menu(ex: MenuExample, layout: str = DEFAULT_LAYOUT, type_marker: bool = False) -> str:
     """整条提示. 第 i 行 '<|Di|>. <名字>'; 以 'Answer:' 收尾, 答案 token 紧跟冒号之后, 中间无空格."""
-    ctx, q = split_prompt(ex, layout)
+    ctx, q = split_prompt(ex, layout, type_marker)
     return ctx + q

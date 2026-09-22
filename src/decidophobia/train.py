@@ -37,6 +37,7 @@ class TrainConfig:
     lr_schedule: str = "constant"  # constant | cosine
     warmup_steps: int = 0
     layout: str = DEFAULT_LAYOUT  # context-first | menu-first
+    type_marker: bool = False  # 'Question (<|bool|>):' 里带类型 token
     eval_every: int = 100
     log_every: int = 20
     seed: int = 0
@@ -50,14 +51,14 @@ class EvalSet:
 
 
 @torch.no_grad()
-def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: str) -> dict:
+def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: str, type_marker: bool = False) -> dict:
     """summarize() 那组指标 (位置空间), 二元集再加 binary_summary (类空间). 概率只在各自菜单的 k 个槽上归一."""
     was_training = m.training
     m.eval()
     Q, Y = [], []
     for s in range(0, len(es.examples), es.batch_size):
         chunk = es.examples[s : s + es.batch_size]
-        b = collate(chunk, tok, d_ids, k_max, layout, max_length)
+        b = collate(chunk, tok, d_ids, k_max, layout, max_length, type_marker)
         b = {k: v.to("cuda") for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
         q = torch.softmax(gather_slot_logits(logits, b["slot_ids"]), dim=-1)  # pad 槽 exp(-inf)=0
@@ -100,7 +101,7 @@ def train(
         rec = {"step": step, "train_loss": train_loss, "t": round(time.time() - t0, 1),
                "tctl_c": tctl(), "thermal_waits": waits}
         for name, es in eval_sets.items():
-            rec[name] = evaluate(m, tok, d_ids, es, cfg.k_max, cfg.max_length, cfg.layout)
+            rec[name] = evaluate(m, tok, d_ids, es, cfg.k_max, cfg.max_length, cfg.layout, cfg.type_marker)
             if writer:
                 for k, v in rec[name].items():
                     if v is not None:
@@ -136,7 +137,7 @@ def train(
         if guard:
             waits += guard.wait()
         exs = sample_fn(cfg.batch_size, rng)
-        b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length)
+        b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length, cfg.type_marker)
         b = {k: v.to("cuda") for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
         loss = torch.nn.functional.cross_entropy(gather_slot_logits(logits, b["slot_ids"]), b["gold"])
@@ -164,21 +165,21 @@ def train(
     return history
 
 
-def save_trained(m, d_ids: list[int], cfg: TrainConfig, path) -> None:
-    """只存会变的部分: LoRA 权重 + 256 个 D 行 + 配置. 基模照 model_id 重新加载."""
+def save_trained(m, train_ids: list[int], cfg: TrainConfig, path) -> None:
+    """只存会变的部分: LoRA 权重 + 放开的嵌入行 (D 行 + 类型行) + 配置. 基模照 model_id 重新加载."""
     emb = m.get_input_embeddings().weight
     state = {n: p.detach().cpu() for n, p in m.named_parameters() if p.requires_grad and "lora_" in n}
     torch.save(
-        {"lora": state, "d_embed": emb[d_ids].detach().cpu(), "d_ids": d_ids, "config": asdict(cfg)},
+        {"lora": state, "d_embed": emb[train_ids].detach().cpu(), "d_ids": train_ids, "config": asdict(cfg)},
         path,
     )
 
 
-def load_trained(m, d_ids: list[int], path) -> dict:
-    """把 save_trained 存的 LoRA 权重和 D 行灌回 prepare_model 之后的模型. 返回存档里的 config."""
+def load_trained(m, train_ids: list[int], path) -> dict:
+    """把 save_trained 存的 LoRA 权重和嵌入行灌回 prepare_model 之后的模型. 返回存档里的 config."""
     ck = torch.load(path, map_location="cpu")
-    if ck["d_ids"] != d_ids:
-        raise ValueError("checkpoint D-token ids differ from this tokenizer's")
+    if ck["d_ids"] != train_ids:
+        raise ValueError(f"checkpoint has {len(ck['d_ids'])} trainable embedding rows, this model expects {len(train_ids)}")
     params = dict(m.named_parameters())
     missing = [n for n in ck["lora"] if n not in params]
     if missing:
@@ -187,5 +188,5 @@ def load_trained(m, d_ids: list[int], path) -> dict:
         for n, t in ck["lora"].items():
             params[n].copy_(t.to(params[n].dtype))
         emb = m.get_input_embeddings().weight
-        emb[d_ids] = ck["d_embed"].to(emb.dtype).to(emb.device)
+        emb[train_ids] = ck["d_embed"].to(emb.dtype).to(emb.device)
     return ck["config"]

@@ -29,7 +29,7 @@ from decidophobia.data import class_split
 from decidophobia.model import LORA_TARGETS, prepare_model
 from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.thermal import ThermalGuard
-from decidophobia.tokens import install_d_tokens
+from decidophobia.tokens import install_d_tokens, install_type_tokens
 from decidophobia.train import EvalSet, TrainConfig, load_trained, save_trained, train
 
 DATASETS = ("banking77", "boolq", "both")
@@ -44,6 +44,8 @@ def main() -> None:
                     help="放开的范围: d-only 只训 D 行; attn 加 attention LoRA; attn-mlp 再加 MLP LoRA")
     ap.add_argument("--layout", default=DEFAULT_LAYOUT, choices=LAYOUTS,
                     help="context-first: 上下文在前, 前缀可作 KV cache 共享 (默认); menu-first: 菜单在前, 对照组")
+    ap.add_argument("--type-marker", action="store_true",
+                    help="问句标签写成 'Question (<|bool|>):', 类型 token 随 D 行一起训")
     ap.add_argument("--lora-r", type=int, default=8)
     ap.add_argument("--lora-alpha", type=int, default=16)
     ap.add_argument("--lora-dropout", type=float, default=0.05)
@@ -69,7 +71,8 @@ def main() -> None:
     ap.add_argument("--out", default=None, help="默认 runs/<时间戳>-<dataset>-<trainable>-<schedule>-<layout>")
     args = ap.parse_args()
 
-    out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}")
+    tag = "-qtype" if args.type_marker else ""
+    out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")
     out.mkdir(parents=True, exist_ok=True)
 
     # ---- 数据: 每个数据集给一个 sampler 和若干评估集 ------------------------------
@@ -109,27 +112,29 @@ def main() -> None:
     # ---- 模型 ---------------------------------------------------------------------
     tok = AutoTokenizer.from_pretrained(args.model)
     d_ids = install_d_tokens(tok)
+    t_ids = install_type_tokens(tok)
+    train_ids = d_ids + t_ids  # 类型行永远放开; 不带 --type-marker 时它们不出现在提示里, 梯度为零、原地不动
     lm = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).to("cuda")
-    m = prepare_model(lm, d_ids, args.lora_r, args.lora_alpha, args.lora_dropout, trainable=args.trainable)
-    init_cfg = load_trained(m, d_ids, args.init) if args.init else None
+    m = prepare_model(lm, train_ids, args.lora_r, args.lora_alpha, args.lora_dropout, trainable=args.trainable)
+    init_cfg = load_trained(m, train_ids, args.init) if args.init else None
 
     cfg = TrainConfig(
         steps=args.steps, batch_size=args.batch_size, k_max=max(args.k_max, args.k_eval), max_length=args.max_length,
         lr_lora=args.lr_lora, lr_embed=args.lr_embed, weight_decay=args.weight_decay,
-        lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout,
+        lr_schedule=args.lr_schedule, warmup_steps=args.warmup, layout=args.layout, type_marker=args.type_marker,
         eval_every=args.eval_every, seed=args.seed,
     )
     guard = ThermalGuard(max_c=args.temp_max, cooldown_s=args.temp_cooldown)
     writer = SummaryWriter(log_dir=str(out / "tb"))
     writer.add_text("args", json.dumps(vars(args), indent=2), 0)
     n_train = sum(p.numel() for p in m.parameters() if p.requires_grad)
-    print(f"dataset={args.dataset} trainable={args.trainable} layout={args.layout} params {n_train:,}  "
+    print(f"dataset={args.dataset} trainable={args.trainable} layout={args.layout} type_marker={args.type_marker} params {n_train:,}  "
           f"init={args.init or '-'}  eval " + " ".join(f"{k}={len(v.examples)}" for k, v in eval_sets.items())
           + f"  tctl {guard.read()}  → {out}", flush=True)
     history = train(m, tok, d_ids, sample_fn, eval_sets, cfg, log_path=out / "log.jsonl", writer=writer, guard=guard)
     writer.close()
     if args.steps > 0:
-        save_trained(m, d_ids, cfg, out / "trained.pt")
+        save_trained(m, train_ids, cfg, out / "trained.pt")
     (out / "result.json").write_text(json.dumps({
         "args": vars(args),
         "trainable_params": n_train,

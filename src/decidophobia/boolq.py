@@ -20,6 +20,7 @@ def _mk(ds) -> LabeledSet:
         names=NAMES,
         context_label="Passage",
         questions=[q.strip().rstrip("?") + "?" for q in ds["question"]],
+        qtype="bool",
     )
 
 

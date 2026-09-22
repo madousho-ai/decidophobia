@@ -25,8 +25,9 @@ LORA_TARGETS: dict[str, list[str]] = {
 
 
 def prepare_model(
-    lm, d_ids: list[int], lora_r: int, lora_alpha: int, lora_dropout: float, trainable: str = "attn"
+    lm, train_ids: list[int], lora_r: int, lora_alpha: int, lora_dropout: float, trainable: str = "attn"
 ):
+    """train_ids: 嵌入矩阵里放开的行 —— 256 个 D 行, 加上用到的类型 token 行."""
     targets = LORA_TARGETS[trainable]
     if targets:
         cfg = LoraConfig(
@@ -41,12 +42,12 @@ def prepare_model(
     emb = m.get_input_embeddings().weight
     emb.requires_grad_(True)
     keep = torch.zeros(emb.shape[0], dtype=torch.bool, device=emb.device)
-    keep[d_ids] = True
+    keep[train_ids] = True
     emb.register_hook(lambda g: g * keep[:, None].to(g.dtype))
     # 空行的初值是随机的 (基模从没训过它们); 从已有嵌入的均值起步, 让第一步就在合理的尺度上
     with torch.no_grad():
-        mu = emb[: min(d_ids)].mean(0)
-        emb[d_ids] = mu + 0.01 * torch.randn(len(d_ids), emb.shape[1], device=emb.device, dtype=emb.dtype)
+        mu = emb[: min(train_ids)].mean(0)
+        emb[train_ids] = mu + 0.01 * torch.randn(len(train_ids), emb.shape[1], device=emb.device, dtype=emb.dtype)
     return m
 
 

@@ -11,7 +11,7 @@ from decidophobia.batch import collate
 from decidophobia.data import MenuExample
 from decidophobia.loss import slot_cross_entropy
 from decidophobia.model import last_logits, prepare_model, trainable_param_groups
-from decidophobia.tokens import install_d_tokens
+from decidophobia.tokens import install_d_tokens, install_type_tokens
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 
@@ -21,8 +21,9 @@ def _load():
 
     tok = AutoTokenizer.from_pretrained(MODEL)
     d_ids = install_d_tokens(tok)
+    t_ids = install_type_tokens(tok)
     lm = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.bfloat16).to("cuda")
-    return tok, d_ids, lm
+    return tok, d_ids + t_ids, lm
 
 
 def test_prepare_model_trains_only_lora_and_embedding():
@@ -37,11 +38,12 @@ def test_prepare_model_trains_only_lora_and_embedding():
 
 
 def test_embedding_gradient_is_zero_outside_d_rows():
-    """一步反传后, 嵌入矩阵的梯度只在 D 行非零 —— 基模的词嵌入不许动."""
+    """一步反传后, 嵌入矩阵的梯度只在 D 行和 type 行非零 —— 基模的词嵌入不许动.
+    提示里带 <|choice|> 标记, 所以那一行也该有梯度."""
     tok, d_ids, lm = _load()
     m = prepare_model(lm, d_ids, lora_r=4, lora_alpha=8, lora_dropout=0.0)
-    exs = [MenuExample(query="I lost my card", options=[0, 1], gold_idx=0, label=0, option_names=["card lost", "change pin"])]
-    b = collate(exs, tok, d_ids, k_max=2)
+    exs = [MenuExample(query="I lost my card", options=[0, 1], gold_idx=0, label=0, option_names=["card lost", "change pin"], qtype="choice")]
+    b = collate(exs, tok, d_ids[:256], k_max=2, type_marker=True)
     b = {k: v.to("cuda") for k, v in b.items()}
     logits = last_logits(m, b["input_ids"], b["attention_mask"])
     slot_cross_entropy(logits, b["slot_ids"], b["gold"]).backward()
@@ -51,7 +53,8 @@ def test_embedding_gradient_is_zero_outside_d_rows():
     d = torch.zeros(g.shape[0], dtype=torch.bool, device=g.device)
     d[d_ids] = True
     assert g[~d].abs().max().item() == 0.0, g[~d].abs().max().item()
-    assert g[d].abs().max().item() > 0.0
+    assert g[d_ids[:2]].abs().max().item() > 0.0  # D0/D1 在菜单里
+    assert g[d_ids[256]].abs().max().item() > 0.0  # <|choice|> 在 Question 行里
 
 
 def test_trainable_param_groups_split_lora_from_embedding():

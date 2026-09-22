@@ -12,7 +12,7 @@ from decidophobia.batch import collate
 from decidophobia.data import MenuExample
 from decidophobia.loss import slot_cross_entropy
 from decidophobia.metrics import brier_multiclass, ece_multiclass, nll_multiclass, topk_accuracy
-from decidophobia.tokens import D_TOKENS, install_d_tokens
+from decidophobia.tokens import D_TOKENS, TYPE_TOKENS, install_d_tokens, install_type_tokens
 
 MODEL = "Qwen/Qwen3-0.6B-Base"
 
@@ -55,6 +55,28 @@ def test_d_token_is_single_token_right_after_colon():
     enc = tok.encode("Answer:<|D3|>", add_special_tokens=False)
     assert enc[-1] == ids[3], tok.convert_ids_to_tokens(enc)
     assert tok.convert_ids_to_tokens(enc[-2]) == ":", tok.convert_ids_to_tokens(enc)
+
+
+def test_type_tokens_take_the_rows_after_d_tokens():
+    """<|choice|> <|bool|> <|score|> 紧跟 D255 之后 (151925..151927), 仍在 vocab_size 151936 内."""
+    tok = _tok()
+    d = install_d_tokens(tok)
+    t = install_type_tokens(tok)
+    assert TYPE_TOKENS == ["<|choice|>", "<|bool|>", "<|score|>"]
+    assert t == [d[-1] + 1, d[-1] + 2, d[-1] + 3] and t[-1] < 151936, t
+
+
+def test_type_marker_tokenizes_cleanly_inside_parentheses():
+    """'Question (<|bool|>): is it?' 必须切成 [..., ' (', <|bool|>, '):', ...]:
+    特殊 token 两侧的括号各自独立, 不与 Question 或问句合并."""
+    tok = _tok()
+    install_d_tokens(tok)
+    t = install_type_tokens(tok)
+    ids = tok.encode("Question (<|bool|>): is it?", add_special_tokens=False)
+    toks = tok.convert_ids_to_tokens(ids)
+    i = ids.index(t[1])
+    assert toks[i - 1] == "Ġ(" and toks[i + 1] == "):", toks
+    assert toks[0] == "Question", toks
 
 
 # --------------------------------------------------------------------------
