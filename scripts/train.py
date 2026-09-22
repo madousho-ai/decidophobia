@@ -26,7 +26,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from decidophobia.banking77 import load_banking77
 from decidophobia.data import build_examples, class_split
 from decidophobia.model import LORA_TARGETS, prepare_model
-from decidophobia.prompt import LAYOUTS
+from decidophobia.prompt import DEFAULT_LAYOUT, LAYOUTS
 from decidophobia.thermal import ThermalGuard
 from decidophobia.tokens import install_d_tokens
 from decidophobia.train import TrainConfig, save_trained, train
@@ -37,8 +37,8 @@ def main() -> None:
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B-Base")
     ap.add_argument("--trainable", default="attn", choices=sorted(LORA_TARGETS),
                     help="放开的范围: d-only 只训 D 行; attn 加 attention LoRA; attn-mlp 再加 MLP LoRA")
-    ap.add_argument("--layout", default="menu-first", choices=LAYOUTS,
-                    help="menu-first: 菜单在前用户句在后; context-first: 用户句在前, 前缀可作 KV cache 共享")
+    ap.add_argument("--layout", default=DEFAULT_LAYOUT, choices=LAYOUTS,
+                    help="context-first: 用户句在前, 前缀可作 KV cache 共享 (默认); menu-first: 菜单在前, 对照组")
     ap.add_argument("--lora-r", type=int, default=8)
     ap.add_argument("--lora-alpha", type=int, default=16)
     ap.add_argument("--lora-dropout", type=float, default=0.05)

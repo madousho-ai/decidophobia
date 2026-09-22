@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from decidophobia.data import MenuExample
-from decidophobia.prompt import render_menu
+from decidophobia.prompt import DEFAULT_LAYOUT, render_menu
 
 
 def collate(
@@ -14,7 +14,7 @@ def collate(
     names: dict[int, str],
     d_ids: list[int],
     k_max: int,
-    layout: str = "menu-first",
+    layout: str = DEFAULT_LAYOUT,
 ) -> dict[str, torch.Tensor]:
     """返回
       input_ids      (B, L)  左填充

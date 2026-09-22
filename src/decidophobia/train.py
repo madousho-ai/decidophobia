@@ -14,6 +14,7 @@ from decidophobia.data import MenuExample, compose_menu
 from decidophobia.loss import gather_slot_logits
 from decidophobia.metrics import summarize
 from decidophobia.model import last_logits, trainable_param_groups
+from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.schedule import lr_scale
 
 
@@ -27,7 +28,7 @@ class TrainConfig:
     lr_embed: float = 1e-3
     weight_decay: float = 0.0
     lr_schedule: str = "constant"  # constant | cosine
-    layout: str = "menu-first"  # menu-first | context-first
+    layout: str = DEFAULT_LAYOUT  # context-first | menu-first
     warmup_steps: int = 0
     eval_every: int = 100
     eval_batch_size: int = 16
@@ -51,7 +52,7 @@ def sample_examples(
 
 
 @torch.no_grad()
-def evaluate(m, tok, names, d_ids, examples: list[MenuExample], k_max: int, batch_size: int, layout: str = "menu-first") -> dict:
+def evaluate(m, tok, names, d_ids, examples: list[MenuExample], k_max: int, batch_size: int, layout: str = DEFAULT_LAYOUT) -> dict:
     """在给定样本上算 summarize() 那组指标. 概率只在各自菜单的 k 个槽上归一."""
     was_training = m.training
     m.eval()
