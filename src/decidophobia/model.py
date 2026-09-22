@@ -13,14 +13,31 @@ import torch
 from peft import LoraConfig, get_peft_model
 
 ATTN_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj"]
+MLP_TARGETS = ["gate_proj", "up_proj", "down_proj"]
+
+# 放开的范围, 三档. 全参不在其中: 0.6B 全参 AdamW 的优化器状态 8GB 卡放不下,
+# 更要紧的是它让模型有能力记住数据集的事实, 留出类的成绩就不再说明泛化.
+LORA_TARGETS: dict[str, list[str]] = {
+    "d-only": [],  # 基模全冻, 只训 256 个 D 行 —— 纯读出
+    "attn": ATTN_TARGETS,
+    "attn-mlp": ATTN_TARGETS + MLP_TARGETS,
+}
 
 
-def prepare_model(lm, d_ids: list[int], lora_r: int, lora_alpha: int, lora_dropout: float):
-    cfg = LoraConfig(
-        r=lora_r, lora_alpha=lora_alpha, lora_dropout=lora_dropout,
-        target_modules=ATTN_TARGETS, bias="none", task_type="CAUSAL_LM",
-    )
-    m = get_peft_model(lm, cfg)
+def prepare_model(
+    lm, d_ids: list[int], lora_r: int, lora_alpha: int, lora_dropout: float, trainable: str = "attn"
+):
+    targets = LORA_TARGETS[trainable]
+    if targets:
+        cfg = LoraConfig(
+            r=lora_r, lora_alpha=lora_alpha, lora_dropout=lora_dropout,
+            target_modules=targets, bias="none", task_type="CAUSAL_LM",
+        )
+        m = get_peft_model(lm, cfg)
+    else:
+        m = lm
+        for p in m.parameters():
+            p.requires_grad_(False)
     emb = m.get_input_embeddings().weight
     emb.requires_grad_(True)
     keep = torch.zeros(emb.shape[0], dtype=torch.bool, device=emb.device)

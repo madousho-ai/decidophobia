@@ -65,6 +65,25 @@ def test_trainable_param_groups_split_lora_from_embedding():
     assert all(len(g["params"]) > 0 for g in groups)
 
 
+def test_trainable_d_only_has_no_lora():
+    """trainable='d-only': 不挂 LoRA, 可训参数只有 embed_tokens 一个."""
+    tok, d_ids, lm = _load()
+    m = prepare_model(lm, d_ids, lora_r=4, lora_alpha=8, lora_dropout=0.0, trainable="d-only")
+    names = [n for n, p in m.named_parameters() if p.requires_grad]
+    assert len(names) == 1 and "embed_tokens" in names[0], names
+    groups = trainable_param_groups(m, lr_lora=1e-4, lr_embed=1e-3)
+    assert [len(g["params"]) for g in groups] == [0, 1], groups
+
+
+def test_trainable_attn_mlp_covers_mlp_projections():
+    """trainable='attn-mlp': LoRA 也挂到 gate/up/down_proj 上."""
+    tok, d_ids, lm = _load()
+    m = prepare_model(lm, d_ids, lora_r=4, lora_alpha=8, lora_dropout=0.0, trainable="attn-mlp")
+    names = [n for n, p in m.named_parameters() if p.requires_grad]
+    assert any("gate_proj" in n and "lora_" in n for n in names), names[:5]
+    assert any("q_proj" in n and "lora_" in n for n in names), names[:5]
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):
