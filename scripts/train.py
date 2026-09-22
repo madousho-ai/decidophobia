@@ -57,6 +57,7 @@ def main() -> None:
     ap.add_argument("--steps", type=int, default=300, help="0 = 只评估")
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--max-length", type=int, default=512, help="超长提示从左截, BoolQ passage p95 约 256 token")
+    ap.add_argument("--grad-ckpt", action="store_true", help="梯度 checkpointing: 激活 5 GiB -> 0.6 GiB, 时间 +30%%")
     ap.add_argument("--k-min", type=int, default=2)
     ap.add_argument("--k-max", type=int, default=10)
     ap.add_argument("--k-eval", type=int, default=10, help="Banking77 评估菜单长度 (固定); BoolQ 恒为 2")
@@ -71,7 +72,7 @@ def main() -> None:
     ap.add_argument("--out", default=None, help="默认 runs/<时间戳>-<dataset>-<trainable>-<schedule>-<layout>")
     args = ap.parse_args()
 
-    tag = "-qtype" if args.type_marker else ""
+    tag = ("-qtype" if args.type_marker else "") + (f"-b{args.batch_size}" if args.batch_size != 8 else "")
     out = pathlib.Path(args.out or f"runs/{time.strftime('%Y%m%d-%H%M%S')}-{args.dataset}-{args.trainable}-{args.lr_schedule}-{args.layout}{tag}")
     out.mkdir(parents=True, exist_ok=True)
 
@@ -115,7 +116,8 @@ def main() -> None:
     t_ids = install_type_tokens(tok)
     train_ids = d_ids + t_ids  # 类型行永远放开; 不带 --type-marker 时它们不出现在提示里, 梯度为零、原地不动
     lm = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).to("cuda")
-    m = prepare_model(lm, train_ids, args.lora_r, args.lora_alpha, args.lora_dropout, trainable=args.trainable)
+    m = prepare_model(lm, train_ids, args.lora_r, args.lora_alpha, args.lora_dropout,
+                      trainable=args.trainable, grad_ckpt=args.grad_ckpt)
     init_cfg = load_trained(m, train_ids, args.init) if args.init else None
 
     cfg = TrainConfig(
