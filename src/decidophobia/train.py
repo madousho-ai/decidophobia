@@ -1,65 +1,63 @@
-"""训练循环与评估. 每一步的菜单都是现组的: 同一条 query 每次见到的选项集和位置都不同."""
+"""训练循环与评估. 每一步的菜单都是现组的: 同一条 query 每次见到的选项集和位置都不同.
+
+train() 不认识数据集: 拿一个 sample_fn (给 n 和 rng, 还 n 条 MenuExample) 和若干 EvalSet.
+单数据集、双数据集混合、只评估不训练 (steps=0), 都是调用方组 sample_fn 的事.
+"""
 
 from __future__ import annotations
 
 import json
 import random
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
 import torch
 
 from decidophobia.batch import collate
-from decidophobia.data import MenuExample, compose_menu
+from decidophobia.data import MenuExample
 from decidophobia.loss import gather_slot_logits
-from decidophobia.metrics import summarize
+from decidophobia.metrics import binary_summary, summarize
 from decidophobia.model import last_logits, trainable_param_groups
 from decidophobia.prompt import DEFAULT_LAYOUT
 from decidophobia.schedule import lr_scale
+
+SampleFn = Callable[[int, random.Random], list[MenuExample]]
 
 
 @dataclass
 class TrainConfig:
     steps: int = 300
     batch_size: int = 8
-    k_range: tuple[int, int] = (2, 10)
     k_max: int = 16
+    max_length: int = 512
     lr_lora: float = 1e-4
     lr_embed: float = 1e-3
     weight_decay: float = 0.0
     lr_schedule: str = "constant"  # constant | cosine
-    layout: str = DEFAULT_LAYOUT  # context-first | menu-first
     warmup_steps: int = 0
+    layout: str = DEFAULT_LAYOUT  # context-first | menu-first
     eval_every: int = 100
-    eval_batch_size: int = 16
     log_every: int = 20
     seed: int = 0
 
 
-def sample_examples(
-    queries: list[str], labels: list[int], classes: list[int],
-    k_range: tuple[int, int], n: int, rng: random.Random,
-) -> list[MenuExample]:
-    """从 (queries, labels) 里抽 n 条 label 落在 classes 内的, 各配一个现组的菜单."""
-    allowed = set(classes)
-    pool = [i for i, lab in enumerate(labels) if lab in allowed]
-    out = []
-    for i in rng.sample(pool, n):
-        k = rng.randint(*k_range)
-        opts, gi = compose_menu(labels[i], classes, k, rng)
-        out.append(MenuExample(query=queries[i], options=opts, gold_idx=gi, label=labels[i]))
-    return out
+@dataclass
+class EvalSet:
+    examples: list[MenuExample]
+    batch_size: int = 16
+    pos_class: int | None = None  # 二元数据集给正类 id, 就多报 auroc / pos_rate / brier_binary
 
 
 @torch.no_grad()
-def evaluate(m, tok, names, d_ids, examples: list[MenuExample], k_max: int, batch_size: int, layout: str = DEFAULT_LAYOUT) -> dict:
-    """在给定样本上算 summarize() 那组指标. 概率只在各自菜单的 k 个槽上归一."""
+def evaluate(m, tok, d_ids, es: EvalSet, k_max: int, max_length: int, layout: str) -> dict:
+    """summarize() 那组指标 (位置空间), 二元集再加 binary_summary (类空间). 概率只在各自菜单的 k 个槽上归一."""
     was_training = m.training
     m.eval()
     Q, Y = [], []
-    for s in range(0, len(examples), batch_size):
-        chunk = examples[s : s + batch_size]
-        b = collate(chunk, tok, names, d_ids, k_max, layout)
+    for s in range(0, len(es.examples), es.batch_size):
+        chunk = es.examples[s : s + es.batch_size]
+        b = collate(chunk, tok, d_ids, k_max, layout, max_length)
         b = {k: v.to("cuda") for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
         q = torch.softmax(gather_slot_logits(logits, b["slot_ids"]), dim=-1)  # pad 槽 exp(-inf)=0
@@ -68,17 +66,17 @@ def evaluate(m, tok, names, d_ids, examples: list[MenuExample], k_max: int, batc
     if was_training:
         m.train()
     out = summarize(Q, Y)
+    if es.pos_class is not None:
+        out.update(binary_summary(Q, es.examples, es.pos_class))
     out["n"] = len(Y)
     return out
 
 
 def train(
-    m, tok, names: dict[int, str], d_ids: list[int],
-    train_queries: list[str], train_labels: list[int], train_classes: list[int],
-    eval_sets: dict[str, list[MenuExample]],
+    m, tok, d_ids: list[int], sample_fn: SampleFn, eval_sets: dict[str, EvalSet],
     cfg: TrainConfig, log_path=None, writer=None, guard=None,
 ) -> list[dict]:
-    """跑 cfg.steps 步. 返回评估记录 (含 step 0 的训练前基线). 每条记录也追加写到 log_path.
+    """跑 cfg.steps 步 (0 = 只做 step 0 的评估). 返回评估记录. 每条记录也追加写到 log_path.
 
     writer: torch.utils.tensorboard.SummaryWriter, 可选. 标量分三组:
       train/loss, train/lr_*        每 log_every 步
@@ -88,12 +86,6 @@ def train(
     """
     rng = random.Random(cfg.seed)
     torch.manual_seed(cfg.seed)
-    opt = torch.optim.AdamW(
-        trainable_param_groups(m, cfg.lr_lora, cfg.lr_embed), weight_decay=cfg.weight_decay
-    )
-    sched = torch.optim.lr_scheduler.LambdaLR(
-        opt, lambda s: lr_scale(s, cfg.warmup_steps, cfg.steps, cfg.lr_schedule)
-    )
     history: list[dict] = []
     log_f = open(log_path, "a") if log_path else None
     waits = 0
@@ -107,11 +99,12 @@ def train(
             waits += guard.wait()
         rec = {"step": step, "train_loss": train_loss, "t": round(time.time() - t0, 1),
                "tctl_c": tctl(), "thermal_waits": waits}
-        for name, exs in eval_sets.items():
-            rec[name] = evaluate(m, tok, names, d_ids, exs, cfg.k_max, cfg.eval_batch_size, cfg.layout)
+        for name, es in eval_sets.items():
+            rec[name] = evaluate(m, tok, d_ids, es, cfg.k_max, cfg.max_length, cfg.layout)
             if writer:
                 for k, v in rec[name].items():
-                    writer.add_scalar(f"eval/{name}/{k}", v, step)
+                    if v is not None:
+                        writer.add_scalar(f"eval/{name}/{k}", v, step)
         if writer:
             if rec["tctl_c"] is not None:
                 writer.add_scalar("sys/tctl_c", rec["tctl_c"], step)
@@ -127,12 +120,23 @@ def train(
     t0 = time.time()
     m.train()
     do_eval(0, None)
+    if cfg.steps == 0:
+        if log_f:
+            log_f.close()
+        return history
+
+    opt = torch.optim.AdamW(
+        trainable_param_groups(m, cfg.lr_lora, cfg.lr_embed), weight_decay=cfg.weight_decay
+    )
+    sched = torch.optim.lr_scheduler.LambdaLR(
+        opt, lambda s: lr_scale(s, cfg.warmup_steps, cfg.steps, cfg.lr_schedule)
+    )
     running = 0.0
     for step in range(1, cfg.steps + 1):
         if guard:
             waits += guard.wait()
-        exs = sample_examples(train_queries, train_labels, train_classes, cfg.k_range, cfg.batch_size, rng)
-        b = collate(exs, tok, names, d_ids, cfg.k_max, cfg.layout)
+        exs = sample_fn(cfg.batch_size, rng)
+        b = collate(exs, tok, d_ids, cfg.k_max, cfg.layout, cfg.max_length)
         b = {k: v.to("cuda") for k, v in b.items()}
         logits = last_logits(m, b["input_ids"], b["attention_mask"])
         loss = torch.nn.functional.cross_entropy(gather_slot_logits(logits, b["slot_ids"]), b["gold"])
@@ -168,3 +172,20 @@ def save_trained(m, d_ids: list[int], cfg: TrainConfig, path) -> None:
         {"lora": state, "d_embed": emb[d_ids].detach().cpu(), "d_ids": d_ids, "config": asdict(cfg)},
         path,
     )
+
+
+def load_trained(m, d_ids: list[int], path) -> dict:
+    """把 save_trained 存的 LoRA 权重和 D 行灌回 prepare_model 之后的模型. 返回存档里的 config."""
+    ck = torch.load(path, map_location="cpu")
+    if ck["d_ids"] != d_ids:
+        raise ValueError("checkpoint D-token ids differ from this tokenizer's")
+    params = dict(m.named_parameters())
+    missing = [n for n in ck["lora"] if n not in params]
+    if missing:
+        raise ValueError(f"{len(missing)} LoRA tensors in checkpoint have no home in this model, e.g. {missing[0]}")
+    with torch.no_grad():
+        for n, t in ck["lora"].items():
+            params[n].copy_(t.to(params[n].dtype))
+        emb = m.get_input_embeddings().weight
+        emb[d_ids] = ck["d_embed"].to(emb.dtype).to(emb.device)
+    return ck["config"]
