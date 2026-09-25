@@ -1,0 +1,4 @@
+# 生成物: 由 <domain>.py 生成, 仓库里只留 <domain>.py 与参考模型的答案 <domain>.answer.json
+*.questions.json
+*.src.jsonl
+*.answer.json.tmp
